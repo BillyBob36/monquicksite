@@ -1,0 +1,45 @@
+# Dependencies (re-installed dans le stage deps)
+node_modules
+
+# Next.js build artifacts
+.next
+out
+build
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Env files (passes via Coolify env vars)
+.env
+.env.local
+.env.development
+.env.production
+.env*.local
+
+# Editor / OS
+.idea
+.vscode
+.DS_Store
+*.swp
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Tests
+coverage
+__tests__
+*.test.ts
+*.test.tsx
+
+# Prisma generated client (re-genere dans le builder stage via `npx prisma generate`)
+src/generated
+
+# Documentation, agents
+README.md
+AGENTS.md
+CLAUDE.md

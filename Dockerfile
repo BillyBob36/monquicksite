@@ -10,7 +10,9 @@ FROM node:22-alpine AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci --no-audit --no-fund
+# --include=dev : Next.js 16 + Tailwind v4 ont besoin des devDependencies
+# (@tailwindcss/postcss notamment) au moment du build pour resoudre les CSS.
+RUN npm ci --include=dev --no-audit --no-fund
 
 # ----------- Stage 2 : builder -----------
 FROM node:22-alpine AS builder
