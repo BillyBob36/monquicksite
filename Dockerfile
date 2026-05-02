@@ -54,8 +54,10 @@ USER nextjs
 
 EXPOSE 3000
 
-# Healthcheck pour Coolify (utilise par Traefik/Caddy en frontal)
+# Healthcheck pour Coolify (utilise par Traefik/Caddy en frontal).
+# 127.0.0.1 (pas localhost) car busybox wget d'Alpine resout localhost en
+# IPv6 [::1] et Next.js ecoute par defaut sur IPv4 0.0.0.0 -> Connection refused.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
 CMD ["node", "server.js"]
