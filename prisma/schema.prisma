@@ -1,0 +1,188 @@
+// =============================================================================
+// monquicksite — Prisma schema
+// Multi-tenant Next.js : un site Next.js qui sert tous les coiffeurs clients
+// via lookup `tenant` par hostname. Auth magic-link via Auth.js + Resend.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  // Note: connection URL is now in prisma.config.ts (Prisma 7+)
+  provider = "postgresql"
+}
+
+// =============================================================================
+// MULTI-TENANCY : un Tenant = un coiffeur client = un site live
+// =============================================================================
+model Tenant {
+  id              String   @id @default(cuid())
+  slug            String   @unique // ex: "salon-jean-paris"
+  hostname        String   @unique // ex: "salonjeanparis.fr"
+  status          TenantStatus @default(PROVISIONING)
+
+  // Identite du salon
+  name            String
+  city            String?
+  postalCode      String?
+  address         String?
+  phone           String?
+  email           String?
+
+  // Contenu du site (overlay sur le template par defaut)
+  intro           Json?    // { title, subtitle, description }
+  services        Json?    // [{ name, price, duration, ... }]
+  photos          Json?    // [{ url, caption, order }]
+  reviews         Json?    // [{ author, content, rating, ... }]
+  hours           Json?    // { monday: { open, close }, ... }
+  social          Json?    // { facebook, instagram, googleMaps }
+  themeColor      String?  // ex: "#c9a96e"
+
+  // Stripe + OVH + Cloudflare integration ids
+  stripeCustomerId       String?  @unique
+  stripeSubscriptionId   String?  @unique
+  stripeSubscriptionPlan StripePlan?
+  ovhDomainId            String?
+  cloudflareHostnameId   String?
+
+  // Provenance : import CSV, signup direct, etc.
+  csvSource       String?
+  groupId         String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  liveAt          DateTime? // moment ou le cert TLS est devenu actif
+
+  // Relations
+  owner           User?    @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  ownerId         String?  @unique
+  events          TenantEvent[]
+
+  @@index([status])
+  @@index([stripeCustomerId])
+}
+
+enum TenantStatus {
+  DRAFT          // demo seul, pas encore signe
+  PROVISIONING   // payment OK, en cours de provisioning (DNS, cert, ...)
+  LIVE           // tout est en place, cert TLS actif
+  SUSPENDED      // souscription cancelled, garde 30j puis on supprime
+  DELETED        // supprime, donnees gardees pour audit/legal
+  ERROR          // erreur de provisioning, intervention manuelle requise
+}
+
+enum StripePlan {
+  TWO_YEAR    // 9,90 € / mois engagement 2 ans
+  ONE_YEAR    // 17,90 € / mois engagement 1 an
+  FLEX        // 29 € / mois sans engagement
+}
+
+// Audit log : evenements importants par tenant (provisioning, ssl, paiement...)
+model TenantEvent {
+  id        String   @id @default(cuid())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId  String
+  type      String   // "provisioning.started", "domain.registered", "ssl.active", "subscription.cancelled", ...
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+}
+
+// =============================================================================
+// AUTH : Auth.js v5 + Prisma adapter, magic links via Resend
+// =============================================================================
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+
+  role          UserRole  @default(SALON_OWNER)
+
+  // Si SALON_OWNER : un seul tenant max (relation 1-1)
+  tenant        Tenant?
+
+  accounts      Account[]
+  sessions      Session[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+enum UserRole {
+  SALON_OWNER  // un coiffeur, gere son tenant
+  AGENCY_ADMIN // toi, acces a tout
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  expires      DateTime
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// =============================================================================
+// IDEMPOTENCY : Stripe webhook events deja traites (evite les doublons)
+// =============================================================================
+model StripeEvent {
+  id           String   @id // = Stripe event.id
+  type         String
+  payload      Json
+  processedAt  DateTime @default(now())
+
+  @@index([type])
+}
+
+// =============================================================================
+// JOB QUEUE : etat des orchestrations en cours (suivi waiting screen)
+// =============================================================================
+model ProvisioningJob {
+  id           String   @id @default(cuid())
+  tenantId     String?
+  status       JobStatus @default(PENDING)
+  step         String?  // "domain.registering", "dns.creating", "ssl.waiting", ...
+  progress     Int      @default(0) // 0-100
+  errorMessage String?
+  payload      Json?
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  ERROR
+  CANCELLED
+}

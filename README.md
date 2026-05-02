@@ -1,36 +1,100 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# monquicksite
 
-## Getting Started
+SaaS d'auto-deployment de sites web pour coiffeurs FR. Demo IS the trial : on
+envoie un cold email avec une démo pré-construite, le coiffeur peut basculer
+sa démo en site vraiment en ligne en moins de 5 minutes via Stripe Checkout.
 
-First, run the development server:
+## Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+Internet
+  ↓
+Cloudflare for SaaS         ← gestion custom hostnames clients
+  ↓                           (TLS auto + WAF + DDoS L7 + CDN)
+Hetzner cx33 VPS            ← 138.201.152.222 (Falkenstein)
+  ↓
+Coolify (déploiement)
+  ↓
+Next.js multi-tenant        ← cette codebase
+  ↓
+Postgres tenants
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Stack
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **Next.js 16** (App Router) + React 19 + TypeScript
+- **Tailwind v4** pour le styling
+- **Prisma** pour Postgres
+- **Auth.js v5** (magic links via Resend)
+- **Stripe Checkout** pour les souscriptions
+- **OVHcloud Domain API** pour l'achat automatisé de domaines
+- **Cloudflare for SaaS API** pour les custom hostnames + TLS
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Logique multi-tenant
 
-## Learn More
+Le fichier `src/proxy.ts` (Next.js 16 a renommé `middleware.ts` → `proxy.ts`)
+résout le hostname HTTP en un slug de tenant via lookup Postgres avec cache LRU
+en mémoire (5 min TTL, 1024 entrées). La requête est ensuite réécrite vers
+`/sites/[slug]/...`.
 
-To learn more about Next.js, take a look at the following resources:
+| Hostname | Route |
+|---|---|
+| `monsitehq.com` | landing marketing |
+| `outil.monsitehq.com` | admin agence |
+| `customers.monsitehq.com` | Cloudflare for SaaS Fallback Origin |
+| `salonjean.fr` (custom client) | rewrite vers `/sites/salon-jean-paris/` |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Tarification (V1)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Plan | Prix/mois TTC | Engagement |
+|---|---|---|
+| 2 ans | 9,90 € | 24 mois |
+| 1 an | 17,90 € | 12 mois |
+| Flex | 29,00 € | aucun |
 
-## Deploy on Vercel
+## Workflow signup automatisé
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Stripe webhook `checkout.session.completed` → idempotency check
+2. OVHcloud API : achat du domaine (premier moment où l'argent sort)
+3. OVHcloud API : `CNAME @` → `customers.monsitehq.com`
+4. Cloudflare API : `POST /custom_hostnames` avec le hostname client
+5. Postgres : `INSERT tenants` avec status `LIVE`
+6. Resend : email de confirmation
+7. Site live sous 5 min
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Dev local
+
+```bash
+cp .env.example .env
+# remplir DATABASE_URL, AUTH_SECRET, etc.
+npx prisma generate
+npx prisma migrate dev
+npm run dev
+```
+
+## Deploy
+
+Coolify (sur VPS Hetzner cx33 dédié, séparé du Coolify de l'agence) build
+l'image Docker depuis ce repo et expose l'app derrière Cloudflare for SaaS.
+Voir `Dockerfile` pour le build multi-stage standalone.
+
+## Structure du repo
+
+```
+src/
+├── proxy.ts                   ← routing multi-tenant par hostname
+├── lib/
+│   ├── db.ts                  ← Prisma client singleton
+│   ├── tenant.ts              ← lookup hostname → slug + cache LRU
+│   ├── cloudflare.ts          ← Cloudflare for SaaS API
+│   ├── ovh.ts                 ← OVHcloud Domain API
+│   └── stripe.ts              ← Stripe Checkout + plans
+├── app/
+│   ├── page.tsx               ← landing monsitehq.com
+│   ├── api/health/route.ts    ← healthcheck Coolify/CF
+│   ├── sites/[tenant]/        ← site rendu d'un client
+│   ├── admin/                 ← admin coiffeur (magic link)
+│   └── agency-admin/          ← admin agence (toi)
+└── generated/prisma/          ← Prisma client généré
+prisma/schema.prisma           ← schéma DB (tenants, users, jobs)
+```
